@@ -86,9 +86,12 @@ textarea.input{resize:vertical;min-height:6.5em}
 .qcard .acts{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:auto}
 /* Nastavničke kartice: sortiranje povlačenjem samo pomoću ručkice */
 .qcard .qcard-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:2px}
-.qcard .qdrag{display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px dashed var(--line);border-radius:8px;background:var(--sunk);color:var(--ink-2);font-size:.76rem;font-weight:750;padding:5px 8px;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none}
+.qcard .qdrag{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border:0;border-radius:8px;background:transparent;color:var(--ink-3);opacity:.62;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;transition:background .15s ease,color .15s ease,opacity .15s ease}
+.qcard:hover .qdrag,.qcard .qdrag:hover{opacity:1}
+.qcard .qdrag:hover,.qcard .qdrag:focus-visible{background:var(--sunk);color:var(--ink-2);opacity:1}
+.qcard .qdrag:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .qcard .qdrag:active{cursor:grabbing}
-.qcard .qdrag svg{width:14px;height:14px}
+.qcard .qdrag svg{width:18px;height:18px;pointer-events:none}
 .qcard.sort-dragging{opacity:.48;outline:2px dashed var(--accent);outline-offset:2px}
 .qcard.sort-target{box-shadow:0 0 0 2px var(--accent),var(--shadow)}
 .qsort-hint{color:var(--ink-2);font-size:.82rem;margin:0 0 12px}
@@ -409,6 +412,7 @@ const I = {
   eye:'<svg class="i" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   play:'<svg class="i" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></svg>',
   plus:'<svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  grip:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="5" r="1.6" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="19" r="1.6" fill="currentColor" stroke="none"/></svg>',
   up:'<svg class="i" viewBox="0 0 24 24" style="width:.9em;height:.9em"><path d="M6 15l6-6 6 6"/></svg>',
   down:'<svg class="i" viewBox="0 0 24 24" style="width:.9em;height:.9em"><path d="M6 9l6 6 6-6"/></svg>',
   img:'<svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>',
@@ -675,7 +679,7 @@ const Host = {
         ${SAMPLE ? `<button class="btn ghost" id="add-sample">Dodaj primjer kviza</button>` : ''}
         <button class="btn primary" id="new-q">${I.plus} Novi kviz</button></div></div>
       <nav class="ftabs" id="ftabs" aria-label="Predmeti"></nav>
-      <p class="qsort-hint" id="qsort-hint" hidden>↕ Uhvatite kviz za oznaku „Povuci” i premjestite ga na željeno mjesto. Raspored se automatski sprema.</p>
+      <p class="qsort-hint" id="qsort-hint" hidden>Za promjenu redoslijeda povucite ikonicu u gornjem kutu kartice. Raspored se automatski sprema.</p>
        <div id="qgrid" class="grid-q"><div class="empty">Učitavam…</div></div>
       <div class="section-gap home-head"><div><p class="label">Izvještaji</p><h2>Održani kvizovi</h2></div></div>
       <div id="hist"><div class="empty">Učitavam…</div></div>
@@ -760,7 +764,7 @@ const Host = {
       const bad = quizProblems(q).length || q.questions.some(x => qProblems(x).length);
       const n = q.questions.length;
       return `<article class="qcard" data-id="${esc(q.id)}">
-        <div class="body"><div class="qcard-head">${this.folder === '*' && q.folder ? `<span class="fchip">${esc(q.folder)}</span>` : '<span></span>'}${this.curFolder() ? `<span class="qdrag" draggable="true" data-qdrag="${esc(q.id)}" title="Povuci za promjenu redoslijeda" aria-label="Premjesti kviz ${esc(q.title || 'Bez naslova')}">↕ Povuci</span>` : ''}</div><h3>${esc(q.title || 'Bez naslova')}</h3>
+        <div class="body"><div class="qcard-head">${this.folder === '*' && q.folder ? `<span class="fchip">${esc(q.folder)}</span>` : '<span></span>'}${this.curFolder() ? `<span class="qdrag" draggable="true" data-qdrag="${esc(q.id)}" title="Povuci za promjenu redoslijeda" aria-label="Povuci kviz ${esc(q.title || 'Bez naslova')} za promjenu redoslijeda">${I.grip}</span>` : ''}</div><h3>${esc(q.title || 'Bez naslova')}</h3>
           <div class="meta"><span>${q.drawByCat ? `${q.drawGroups.reduce((sum, g) => sum + g.count, 0)} od ${n} pitanja · ${q.drawGroups.length} podbaza` : (q.drawN > 0 && q.drawN < n ? `${q.drawN} od ${n} pitanja` : `${n} ${n % 10 === 1 && n % 100 !== 11 ? 'pitanje' : 'pitanja'}`)}</span><span>${q.qTime} s</span><span>+${fmtP(q.points)} b/točan${q.negativeOn ? ` · −${fmtP(q.negativePoints)} b/netočan` : ''}</span>${bad ? '<span style="color:var(--warn);font-weight:700">nepotpun</span>' : ''}</div>
           <div class="acts">
             <button class="btn go sm" data-a="run" ${bad ? 'disabled title="Dovršite kviz prije pokretanja"' : ''}>${I.play} Pokreni</button>
