@@ -84,6 +84,18 @@ textarea.input{resize:vertical;min-height:6.5em}
 .qcard .body{padding:14px 16px 16px;display:grid;gap:.6rem;flex:1}
 .qcard .meta{display:flex;gap:.8rem;font-size:.85rem;color:var(--ink-2)}
 .qcard .acts{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:auto}
+/* Nastavničke kartice: sortiranje povlačenjem samo pomoću ručkice */
+.qcard .qcard-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:2px}
+.qcard .qdrag{display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px dashed var(--line);border-radius:8px;background:var(--sunk);color:var(--ink-2);font-size:.76rem;font-weight:750;padding:5px 8px;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none}
+.qcard .qdrag:active{cursor:grabbing}
+.qcard .qdrag svg{width:14px;height:14px}
+.qcard.sort-dragging{opacity:.48;outline:2px dashed var(--accent);outline-offset:2px}
+.qcard.sort-target{box-shadow:0 0 0 2px var(--accent),var(--shadow)}
+.qsort-hint{color:var(--ink-2);font-size:.82rem;margin:0 0 12px}
+.copy-dialog{max-width:520px;gap:14px}
+.copy-dialog h2{font-size:1.4rem}
+.copy-dialog .copy-actions{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+
 .section-gap{margin-top:2.6rem}
 .table-wrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:14px}
 table.t{border-collapse:collapse;width:100%;font-size:.93rem}
@@ -663,7 +675,8 @@ const Host = {
         ${SAMPLE ? `<button class="btn ghost" id="add-sample">Dodaj primjer kviza</button>` : ''}
         <button class="btn primary" id="new-q">${I.plus} Novi kviz</button></div></div>
       <nav class="ftabs" id="ftabs" aria-label="Predmeti"></nav>
-      <div id="qgrid" class="grid-q"><div class="empty">Učitavam…</div></div>
+      <p class="qsort-hint" id="qsort-hint" hidden>↕ Uhvatite kviz za oznaku „Povuci” i premjestite ga na željeno mjesto. Raspored se automatski sprema.</p>
+       <div id="qgrid" class="grid-q"><div class="empty">Učitavam…</div></div>
       <div class="section-gap home-head"><div><p class="label">Izvještaji</p><h2>Održani kvizovi</h2></div></div>
       <div id="hist"><div class="empty">Učitavam…</div></div>
       ${DB.mode === 'demo' ? `<div class="note section-gap"><b>Demo način.</b> Podaci se čuvaju samo u ovom pregledniku. Stranu natjecatelja isprobajte tako da istu stranicu otvorite u novoj kartici s <span class="mono">#igraj</span> na kraju adrese i upišete kod kviza. Za pravo predavanje upišite Firebase postavke (UPUTE.md).</div>` : ''}
@@ -677,7 +690,8 @@ const Host = {
       rd.onload = async () => { try { const q = normQuiz(JSON.parse(rd.result)); q.id = rid(10); q.updatedAt = Date.now(); if (this.curFolder()) q.folder = this.curFolder(); await DB.set('quizzes/' + q.id, q); toast('Kviz uvezen'); } catch (err) { toast('Datoteka nije ispravan kviz (JSON).'); } };
       rd.readAsText(f);
     };
-    this.unsubs.push(DB.on('quizzes', v => { this.quizzes = v || {}; this.renderTabs(); this.renderGrid(); this.renderHist(); }));
+    this.setupQuizDrag();
+     this.unsubs.push(DB.on('quizzes', v => { this.quizzes = v || {}; this.renderTabs(); this.renderGrid(); this.renderHist(); }));
     this.unsubs.push(DB.on('history', v => { this.history = v || {}; this.renderHist(); }));
   },
   /* ---------- predmeti (mape) ---------- */
@@ -730,14 +744,23 @@ const Host = {
   renderGrid() {
     const g = $('#qgrid'); if (!g) return;
     const all = Object.values(this.quizzes).map(normQuiz);
-    const list = all.filter(q => this.inFolder(q.folder.trim())).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const list = all.filter(q => this.inFolder(q.folder.trim())).sort((a, b) => {
+      if (this.folder === '*' || this.folder === '-') return (b.updatedAt || 0) - (a.updatedAt || 0);
+      const av = Number.isFinite(Number(a.displayOrder)) && a.displayOrder !== undefined && a.displayOrder !== null ? Number(a.displayOrder) : null;
+      const bv = Number.isFinite(Number(b.displayOrder)) && b.displayOrder !== undefined && b.displayOrder !== null ? Number(b.displayOrder) : null;
+      if (av !== null && bv !== null) return av - bv || (b.updatedAt || 0) - (a.updatedAt || 0);
+      if (av !== null) return -1;
+      if (bv !== null) return 1;
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+    const sortHint = $('#qsort-hint'); if (sortHint) sortHint.hidden = !this.curFolder();
     if (!all.length) { g.innerHTML = `<div class="empty" style="grid-column:1/-1">Još nemate kvizova. Kliknite <b>Novi kviz</b>.</div>`; return; }
     if (!list.length) { g.innerHTML = `<div class="empty" style="grid-column:1/-1">U predmetu <b>${esc(this.curFolder() || '')}</b> još nema kvizova. Kliknite <b>Novi kviz</b>, ili kviz premjestite ovamo u njegovim postavkama (polje <i>Predmet</i>).</div>`; return; }
     g.innerHTML = list.map(q => {
       const bad = quizProblems(q).length || q.questions.some(x => qProblems(x).length);
       const n = q.questions.length;
       return `<article class="qcard" data-id="${esc(q.id)}">
-        <div class="body">${this.folder === '*' && q.folder ? `<span class="fchip">${esc(q.folder)}</span>` : ''}<h3>${esc(q.title || 'Bez naslova')}</h3>
+        <div class="body"><div class="qcard-head">${this.folder === '*' && q.folder ? `<span class="fchip">${esc(q.folder)}</span>` : '<span></span>'}${this.curFolder() ? `<span class="qdrag" draggable="true" data-qdrag="${esc(q.id)}" title="Povuci za promjenu redoslijeda" aria-label="Premjesti kviz ${esc(q.title || 'Bez naslova')}">↕ Povuci</span>` : ''}</div><h3>${esc(q.title || 'Bez naslova')}</h3>
           <div class="meta"><span>${q.drawByCat ? `${q.drawGroups.reduce((sum, g) => sum + g.count, 0)} od ${n} pitanja · ${q.drawGroups.length} podbaza` : (q.drawN > 0 && q.drawN < n ? `${q.drawN} od ${n} pitanja` : `${n} ${n % 10 === 1 && n % 100 !== 11 ? 'pitanje' : 'pitanja'}`)}</span><span>${q.qTime} s</span><span>+${fmtP(q.points)} b/točan${q.negativeOn ? ` · −${fmtP(q.negativePoints)} b/netočan` : ''}</span>${bad ? '<span style="color:var(--warn);font-weight:700">nepotpun</span>' : ''}</div>
           <div class="acts">
             <button class="btn go sm" data-a="run" ${bad ? 'disabled title="Dovršite kviz prije pokretanja"' : ''}>${I.play} Pokreni</button>
@@ -755,13 +778,104 @@ const Host = {
       if (a === 'edit') Editor.open(q, false);
       else if (a === 'run') Live.create(q);
       else if (a === 'stats') Stats.open(q, this.history);
-      else if (a === 'dup') { const c = clone(q); c.id = rid(10); c.title = (q.title || 'Kviz') + ' (kopija)'; c.updatedAt = Date.now(); await DB.set('quizzes/' + c.id, c); toast('Kopija izrađena'); }
+      else if (a === 'dup') this.openCopyDialog(q);
       else if (a === 'exp') download((q.title || 'kviz').replace(/[^\w\-]+/g, '_') + '.json', JSON.stringify(q, null, 2), 'application/json');
       else if (a === 'del') {
         if (b.dataset.confirm) { await DB.remove('quizzes/' + id); toast('Kviz obrisan'); }
         else { b.dataset.confirm = '1'; b.innerHTML = '<span style="font-size:.8rem;font-weight:700;color:var(--bad)">Potvrdi</span>'; setTimeout(() => { if (b.isConnected) { delete b.dataset.confirm; b.innerHTML = I.trash; } }, 3500); }
       }
     };
+  },
+  setupQuizDrag() {
+    const grid = $('#qgrid'); if (!grid) return;
+    this.draggingId = null; this.dropSaving = false;
+    const clear = () => {
+      grid.querySelectorAll('.qcard').forEach(x => x.classList.remove('sort-dragging', 'sort-target'));
+      this.draggingId = null;
+    };
+    grid.addEventListener('dragstart', e => {
+      const handle = e.target.closest('[data-qdrag]');
+      if (!handle || !this.curFolder()) { e.preventDefault(); return; }
+      this.draggingId = handle.dataset.qdrag;
+      const card = handle.closest('.qcard');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', this.draggingId);
+        try { e.dataTransfer.setDragImage(card, 26, 26); } catch (_) {}
+      }
+      // Ne mijenjati Firebase prije nego što je kartica ispuštena.
+      requestAnimationFrame(() => { if (card.isConnected) card.classList.add('sort-dragging'); });
+    });
+    grid.addEventListener('dragover', e => {
+      if (!this.draggingId) return;
+      const target = e.target.closest('.qcard');
+      const dragged = [...grid.querySelectorAll('.qcard')].find(c => c.dataset.id === this.draggingId);
+      if (!target || !dragged) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      grid.querySelectorAll('.qcard').forEach(c => c.classList.remove('sort-target'));
+      if (target === dragged) return;
+      target.classList.add('sort-target');
+      const rect = target.getBoundingClientRect();
+      const after = e.clientX >= rect.left + rect.width / 2;
+      grid.insertBefore(dragged, after ? target.nextSibling : target);
+    });
+    grid.addEventListener('drop', async e => {
+      if (!this.draggingId) return;
+      e.preventDefault();
+      const ids = [...grid.querySelectorAll('.qcard')].map(c => c.dataset.id);
+      this.dropSaving = true; clear();
+      if (ids.length < 2) return;
+      const updates = {};
+      ids.forEach((id, i) => { updates[id + '/displayOrder'] = i; });
+      try {
+        // Jedna atomska multi-path nadogradnja: ne prepisuje slike, pitanja ni rezultate.
+        await DB.update('quizzes', updates);
+        toast('Raspored kvizova spremljen');
+      } catch (err) {
+        toast('Spremanje redoslijeda nije uspjelo: ' + (err.message || ''), 5000);
+        this.renderGrid();
+      } finally { this.dropSaving = false; }
+    });
+    grid.addEventListener('dragend', () => { clear(); if (!this.dropSaving) this.renderGrid(); });
+  },
+  openCopyDialog(original) {
+    const q = normQuiz(original);
+    const folderNames = this.folders();
+    if (!folderNames.includes(q.folder)) folderNames.push(q.folder);
+    const prevFocus = document.activeElement;
+    const bg = document.createElement('div'); bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal copy-dialog" role="dialog" aria-modal="true" aria-label="Kopiranje kviza" tabindex="-1">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><h2>Kopiraj kviz</h2><button class="icon-btn" id="copy-close" title="Zatvori (Esc)" aria-label="Zatvori">${I.x}</button></div>
+      <p>Originalni kviz ostaje nepromijenjen. Kopiraju se sva pitanja, slike, podbaze i postavke, ali ne i rezultati održanih kvizova.</p>
+      <label class="field"><span>Odredišni predmet</span><select class="input" id="copy-folder">${folderNames.filter(Boolean).map(f => `<option value="${esc(f)}" ${f === q.folder ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
+      <label class="field"><span>Naslov kopije</span><input class="input" id="copy-title" maxlength="150" value="${esc((q.title || 'Kviz') + ' (kopija)')}" required></label>
+      <div class="copy-actions"><button class="btn ghost" id="copy-cancel">Odustani</button><button class="btn primary" id="copy-confirm">${I.copy} Izradi kopiju</button></div>
+    </div>`;
+    const close = () => { document.removeEventListener('keydown', onEscape, true); bg.remove(); if (prevFocus?.isConnected) prevFocus.focus({preventScroll:true}); };
+    const onEscape = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+    bg.addEventListener('click', e => { if (e.target === bg) close(); });
+    bg.querySelector('#copy-close').onclick = close;
+    bg.querySelector('#copy-cancel').onclick = close;
+    bg.querySelector('#copy-confirm').onclick = async () => {
+      const folder = bg.querySelector('#copy-folder').value.trim();
+      const title = bg.querySelector('#copy-title').value.trim();
+      if (!folder || !title) { toast('Odaberite predmet i upišite naslov kopije'); return; }
+      const button = bg.querySelector('#copy-confirm'); button.disabled = true;
+      const c = clone(q); c.id = rid(10); c.title = title; c.folder = folder; c.updatedAt = Date.now(); delete c.displayOrder;
+      try {
+        await DB.set('quizzes/' + c.id, c);
+        close();
+        toast('Kopija spremljena u predmet: ' + folder, 4500);
+        if (this.folder !== folder) { this.folder = folder; sset(localStorage, 'pv-folder', folder); this.renderTabs(); this.renderGrid(); this.renderHist(); }
+      } catch (err) {
+        button.disabled = false;
+        toast('Kopiranje nije uspjelo: ' + (err.message || ''), 5000);
+      }
+    };
+    document.body.appendChild(bg);
+    document.addEventListener('keydown', onEscape, true);
+    bg.querySelector('#copy-folder').focus({preventScroll:true});
   },
   renderHist() {
     const h = $('#hist'); if (!h) return;
@@ -1301,12 +1415,17 @@ const Live = {
   },
   async excel(rows) {
     const qs = this.secret.questions; const nq = qs.length;
+    // Samo Excel/CSV izvještaj sortiramo abecedno: prezime pa ime (hrvatska abeceda).
+    // Broj mjesta ostaje rezultat iz natjecateljskog poretka, bez promjene bodovanja.
+    const hr = new Intl.Collator('hr-HR', {sensitivity: 'variant'});
+    const excelRows = [...rows].sort((a, b) => hr.compare(String(a.prezime || '').trim(), String(b.prezime || '').trim()) ||
+      hr.compare(String(a.ime || '').trim(), String(b.ime || '').trim()) || (a.rank || 0) - (b.rank || 0));
     if (!window.XLSX) { try { await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'); } catch (e) {} }
     const date = new Date(); const d = date.toLocaleDateString('hr-HR');
     const res = [['Mjesto', 'Prezime', 'Ime', 'Točnih odgovora', 'Netočnih odgovora', 'Od pitanja', 'Vrijeme točnih odgovora (s)', 'Bodovi za točne', 'Oduzeti bodovi', 'Bonus', 'Ukupno bodova'],
-      ...rows.map(r => [r.rank, r.prezime, r.ime, r.correct, r.wrong, nq, Math.round(r.time / 100) / 10, r.points, r.penalty, r.bonus, r.total])];
+      ...excelRows.map(r => [r.rank, r.prezime, r.ime, r.correct, r.wrong, nq, Math.round(r.time / 100) / 10, r.points, r.penalty, r.bonus, r.total])];
     const det = [['Mjesto', 'Prezime', 'Ime', ...qs.flatMap((q, i) => [`P${i + 1} odgovor`, `P${i + 1} točno`, `P${i + 1} vrijeme (s)`])],
-      ...rows.map(r => [r.rank, r.prezime, r.ime, ...r.per.flatMap((p, i) => [p.c === null ? '' : aLabel(qs[i], p.c), p.c === null ? '' : (p.ok ? 1 : 0), p.ms === null ? '' : Math.round(p.ms / 100) / 10])])];
+      ...excelRows.map(r => [r.rank, r.prezime, r.ime, ...r.per.flatMap((p, i) => [p.c === null ? '' : aLabel(qs[i], p.c), p.c === null ? '' : (p.ok ? 1 : 0), p.ms === null ? '' : Math.round(p.ms / 100) / 10])])];
     const qsh = [['Pitanje', 'Tekst', 'Točan odgovor', 'Točno odgovorilo', 'Udio točnih (%)'],
       ...qs.map((q, i) => { const k = rows.filter(r => r.per[i].ok).length; return [i + 1, q.text, aLabel(q, q.correct), k, rows.length ? Math.round(100 * k / rows.length) : 0]; })];
     const info = [['Kviz', this.meta.title], ['Kod', this.code], ['Datum izvještaja', d], ['Bodova za točan odgovor', this.S.points], ['Negativno bodovanje uključeno', this.S.negativeOn ? 'Da' : 'Ne'], ['Odbitak za netočan odgovor', this.S.negativeOn ? this.S.negativePoints : 0], ['Neodgovoreno pitanje', 0], ['Vrijeme za odgovor (s)', this.S.qTime], ['Bonus za 1. mjesto', this.S.bonusOn ? this.S.bonus : 0], ['Pravilo poretka', 'Više ukupnih bodova; zatim više točnih odgovora; zatim kraće vrijeme točnih odgovora.']];
