@@ -463,7 +463,8 @@ async function boot() {
 /* ============================================================
    Model kviza
    ============================================================ */
-const fmtP = n => (Math.round((n || 0) * 100) / 100).toLocaleString('hr-HR');
+const roundScore = n => Math.round((Number(n) || 0) * 1000000) / 1000000;
+const fmtP = n => roundScore(n).toLocaleString('hr-HR', {maximumFractionDigits: 6});
 const fmtS = ms => ((ms || 0) / 1000).toLocaleString('hr-HR', {minimumFractionDigits: 1, maximumFractionDigits: 1});
 function newQuestion() { return {id: rid(8), text: '', image: null, answers: ['', '', '', ''], aimg: [false, false, false, false], correct: 0}; }
 /* pomoćne funkcije za ponuđene odgovore: tekst i/ili slika */
@@ -474,7 +475,7 @@ const aLabel = (q, i) => { const t = (arr(q.answers)[i] || '').trim(); return t 
 function aContent(q, i) { const t = (arr(q.answers)[i] || '').trim(); const im = aImg(q, i);
   return `${im ? `<span class="aimg"><img src="${im}" alt="${esc(t || 'Odgovor ' + LET[i])}"></span>` : ''}${t ? `<span class="tx">${esc(t)}</span>` : ''}`; }
 function newQuiz() {
-  return {id: rid(10), title: '', updatedAt: Date.now(), points: 0.5, qTime: 30, revealTime: 10, bonusOn: false, bonus: 0.5, shuffleA: true, lockJoin: true, folder: '', drawN: 0, questions: [newQuestion()]};
+  return {id: rid(10), title: '', updatedAt: Date.now(), points: 0.5, qTime: 30, revealTime: 10, bonusOn: false, bonus: 0.5, negativeOn: false, negativePoints: 0.25, shuffleA: true, lockJoin: true, folder: '', drawN: 0, drawByCat: false, drawGroups: [], questions: [newQuestion()]};
 }
 function normQuiz(q) {
   const o = Object.assign(newQuiz(), q || {});
@@ -486,9 +487,13 @@ function normQuiz(q) {
     while (n.answers.length < 2) n.answers.push('');
     const im = arr(n.aimg); n.aimg = n.answers.map((_, i) => typeof im[i] === 'string' && im[i] ? im[i] : false);
     n.correct = Math.min(Math.max(0, n.correct | 0), n.answers.length - 1);
+    n.cat = String(n.cat || '').trim();
     return n;
   });
-  ['points', 'qTime', 'revealTime', 'bonus', 'drawN'].forEach(k => { o[k] = Number(o[k]) || 0; }); o.drawN = Math.max(0, Math.floor(o.drawN));
+  ['points', 'qTime', 'revealTime', 'bonus', 'negativePoints', 'drawN'].forEach(k => { o[k] = Number(o[k]) || 0; });
+  o.drawN = Math.max(0, Math.floor(o.drawN));
+  o.negativeOn = !!o.negativeOn; o.drawByCat = !!o.drawByCat;
+  o.drawGroups = arr(o.drawGroups).map(g => ({cat: String((g && g.cat) || '').trim(), count: Math.max(0, Math.floor(Number(g && g.count) || 0))}));
   return o;
 }
 function qProblems(q) {
@@ -505,10 +510,36 @@ function quizProblems(q) {
   if (!(q.qTime >= 5)) p.push('Vrijeme za odgovor mora biti barem 5 s');
   if (!(q.revealTime >= 2)) p.push('Prikaz točnog odgovora mora trajati barem 2 s');
   if (q.bonusOn && !(q.bonus > 0)) p.push('Upišite iznos bonusa');
+  if (q.negativeOn && !(Number.isFinite(q.negativePoints) && q.negativePoints > 0)) p.push('Iznos odbitka za netočan odgovor mora biti veći od nule');
+  if (q.drawByCat) {
+    if (!q.drawGroups.length) p.push('Dodajte barem jednu podbazu');
+    const names = new Set();
+    q.drawGroups.forEach((g, i) => {
+      if (!g.cat) p.push('Upišite naziv podbaze ' + (i + 1));
+      if (!(Number.isInteger(g.count) && g.count > 0)) p.push('Broj pitanja za podbazu ' + (i + 1) + ' mora biti pozitivan cijeli broj');
+      if (names.has(g.cat.toLowerCase())) p.push('Podbaza se ponavlja: ' + g.cat);
+      names.add(g.cat.toLowerCase());
+      const available = q.questions.filter(x => (x.cat || '').trim() === g.cat).length;
+      if (g.cat && g.count > available) p.push('Podbaza „' + g.cat + '” traži ' + g.count + ' pitanja, a sadrži ' + available);
+    });
+    if (q.questions.some(x => !(x.cat || '').trim())) p.push('Svakom pitanju dodijelite podbazu (kartica Pitanja)');
+    if (q.questions.some(x => !q.drawGroups.some(g => g.cat === x.cat))) p.push('Neka pitanja pripadaju podbazi koja nije navedena u postavkama');
+  }
   return p;
 }
-/* poredak: više točnih odgovora, pa manje ukupno vrijeme točnih odgovora */
-function rankCmp(a, b) { return (b.correct || 0) - (a.correct || 0) || (a.time || 0) - (b.time || 0); }
+/* Bodovanje i poredak: netočni odgovori donose odbitak samo kad je opcija uključena; bez odgovora = 0. */
+function scoreFor(result, settings) {
+  const correct = Number(result.correct) || 0;
+  const perQ = Object.values(result.perQ || {});
+  const wrong = perQ.filter(a => a && a.c !== null && a.c !== undefined && !a.ok).length;
+  const points = roundScore(correct * (Number(settings.points) || 0));
+  const penalty = settings.negativeOn ? roundScore(wrong * (Number(settings.negativePoints) || 0)) : 0;
+  return {correct, wrong, points, penalty, net: roundScore(points - penalty)};
+}
+function rankCmp(a, b, settings) {
+  const pa = scoreFor(a, settings).net, pb = scoreFor(b, settings).net;
+  return pb - pa || (b.correct || 0) - (a.correct || 0) || (a.time || 0) - (b.time || 0);
+}
 function seeded(str) { let h = 1779033703 ^ str.length; for (let i = 0; i < str.length; i++) { h = Math.imul(h ^ str.charCodeAt(i), 3432918353); h = h << 13 | h >>> 19; }
   return () => { h = Math.imul(h ^ h >>> 16, 2246822507); h = Math.imul(h ^ h >>> 13, 3266489909); h ^= h >>> 16; return (h >>> 0) / 4294967296; }; }
 function seededOrder(n, key) { const r = seeded(key); const a = [...Array(n).keys()]; for (let i = n - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
@@ -662,7 +693,7 @@ const Host = {
       const n = q.questions.length;
       return `<article class="qcard" data-id="${esc(q.id)}">
         <div class="body">${this.folder === '*' && q.folder ? `<span class="fchip">${esc(q.folder)}</span>` : ''}<h3>${esc(q.title || 'Bez naslova')}</h3>
-          <div class="meta"><span>${q.drawN > 0 && q.drawN < n ? `${q.drawN} od ${n} pitanja` : `${n} ${n % 10 === 1 && n % 100 !== 11 ? 'pitanje' : 'pitanja'}`}</span><span>${q.qTime} s</span><span>${fmtP(q.points)} b/točan</span>${bad ? '<span style="color:var(--warn);font-weight:700">nepotpun</span>' : ''}</div>
+          <div class="meta"><span>${q.drawByCat ? `${q.drawGroups.reduce((sum, g) => sum + g.count, 0)} od ${n} pitanja · ${q.drawGroups.length} podbaza` : (q.drawN > 0 && q.drawN < n ? `${q.drawN} od ${n} pitanja` : `${n} ${n % 10 === 1 && n % 100 !== 11 ? 'pitanje' : 'pitanja'}`)}</span><span>${q.qTime} s</span><span>+${fmtP(q.points)} b/točan${q.negativeOn ? ` · −${fmtP(q.negativePoints)} b/netočan` : ''}</span>${bad ? '<span style="color:var(--warn);font-weight:700">nepotpun</span>' : ''}</div>
           <div class="acts">
             <button class="btn go sm" data-a="run" ${bad ? 'disabled title="Dovršite kviz prije pokretanja"' : ''}>${I.play} Pokreni</button>
             <button class="btn sm" data-a="edit">${I.pen} Uredi</button>
@@ -745,7 +776,7 @@ const Editor = {
     const r = $('#rail'); if (!r) return;
     if (this.tab === 'set') {
       const ok = !quizProblems(this.q).length;
-      r.innerHTML = `<button class="step ${ok ? '' : 'bad'}" aria-current="true"><span class="dot">${I.pen}</span><span><b>Kviz</b><small>Naslov, bodovi, vremena, bonus i redoslijed odgovora</small></span></button>
+      r.innerHTML = `<button class="step ${ok ? '' : 'bad'}" aria-current="true"><span class="dot">${I.pen}</span><span><b>Kviz</b><small>Naslov, podbaze, bodovanje, vremena i redoslijed odgovora</small></span></button>
         <button class="step" id="go-q"><span class="dot">${this.q.questions.every(x => !qProblems(x).length) ? I.check : '!'}</span><span><b>Pitanja (${this.q.questions.length})</b><small>Tekst, ponuđeni odgovori i točan odgovor</small></span></button>`;
       $('#go-q').onclick = () => this.setTab('pit');
       return;
@@ -790,18 +821,33 @@ const Editor = {
           <label class="field"><span>Bodova za točan odgovor <i class="req">*</i></span><input class="input" type="number" min="0.1" step="0.1" id="f-points" value="${q.points}"></label>
           <label class="field"><span>Vrijeme za odgovor, s <i class="req">*</i></span><input class="input" type="number" min="5" max="600" id="f-qTime" value="${q.qTime}"></label>
           <label class="field"><span>Prikaz točnog odgovora, s <i class="req">*</i></span><input class="input" type="number" min="2" max="120" id="f-revealTime" value="${q.revealTime}"></label>
-          <label class="field"><span>Pitanja po pokretanju</span><input class="input" type="number" min="0" step="1" id="f-drawN" value="${q.drawN || ''}" placeholder="sva (${q.questions.length})"><span class="faint" style="font-size:.82rem">Npr. 10: svako pokretanje nasumično izvuče 10 pitanja iz baze. Prazno = sva pitanja redom.</span></label></div>
+          <label class="field"><span>Pitanja po pokretanju</span><input class="input" type="number" min="0" step="1" id="f-drawN" ${q.drawByCat ? 'disabled' : ''} value="${q.drawN || ''}" placeholder="sva (${q.questions.length})"><span class="faint" style="font-size:.82rem">Bez podbaza: nasumično se izvlači navedeni broj pitanja. Prazno = sva pitanja.</span></label></div>
+        <div class="setting"><div><h3>Izvlačenje po podbazama</h3></div>${this.sw('s-drawByCat', q.drawByCat)}<p>Za svaku podbazu upišite naziv i koliko se pitanja izvlači. Možete imati različit broj podbaza za svaki kviz. Kategoriju svakog pitanja određujete na kartici Pitanja.</p>
+          <div class="sub" ${q.drawByCat ? '' : 'hidden'} id="sub-drawByCat" style="display:${q.drawByCat ? 'flex' : 'none'}">
+            <div style="display:grid;gap:10px;width:100%">
+              ${q.drawGroups.map((g,i) => `<div class="row" style="gap:10px"><label class="field" style="flex:2 1 180px"><span>Podbaza ${i+1}</span><input class="input" data-group-cat="${i}" maxlength="80" value="${esc(g.cat)}" placeholder="npr. Osnove PI regulatora"></label><label class="field" style="flex:1 1 120px"><span>Broj pitanja</span><input class="input" type="number" min="1" step="1" data-group-count="${i}" value="${g.count || ''}"></label><button class="btn ghost sm" data-group-del="${i}" title="Ukloni podbazu" style="align-self:end">Ukloni</button></div>`).join('')}
+              <button class="btn ghost sm" id="add-group" style="justify-self:start">${I.plus} Dodaj podbazu</button>
+              <p class="faint" id="group-total">Ukupno ${q.drawGroups.reduce((n,g)=>n+g.count,0)} pitanja po pokretanju.</p>
+            </div>
+          </div>
+        </div>
+        <div class="setting"><div><h3>Negativni bodovi za netočan odgovor</h3></div>${this.sw('s-negativeOn', q.negativeOn)}<p>Po želji uključite odbitak za netočan odgovor. Neodgovoreno pitanje uvijek nosi 0 bodova. Iznos upisujete sami za svaki kviz.</p>
+          <div class="sub" ${q.negativeOn ? '' : 'hidden'} id="sub-negativeOn"><label class="field" style="flex:0 1 250px"><span>Odbitak za netočan odgovor, bodova</span><input class="input" type="number" min="0.000001" step="any" id="f-negativePoints" value="${q.negativePoints}"></label></div></div>
         <div class="setting"><div><h3>Bonus bodovi za prvoplasiranog</h3></div>${this.sw('s-bonusOn', q.bonusOn)}<p>Dodaju se pobjedniku na kraju kviza (uz barem jedan točan odgovor).</p>
           <div class="sub" ${q.bonusOn ? '' : 'hidden'} id="sub-bonusOn"><label class="field" style="flex:0 1 220px"><span>Bonus, bodova</span><input class="input" type="number" min="0.1" step="0.1" id="f-bonus" value="${q.bonus}"></label></div></div>
         <div class="setting"><div><h3>Nasumičan redoslijed odgovora za svakog natjecatelja</h3></div>${this.sw('s-shuffleA', q.shuffleA)}<p>Svaki natjecatelj na svom uređaju vidi ponuđene odgovore drugim redom, pa ne može prepisati slovo od susjeda. Na projektoru se tada odgovori prikazuju bez slova.</p></div>
         <div class="setting"><div><h3>Zaključaj prijave nakon početka kviza</h3></div>${this.sw('s-lockJoin', q.lockJoin)}<p>Nakon klika na <i>Započni kviz</i> nove prijave nisu moguće, pa kasni dolasci ne ulaze u poredak. Već prijavljeni natjecatelj koji osvježi stranicu ili mu se ugasi zaslon nastavlja normalno, ali samo na istom uređaju i u istom pregledniku.</p></div>
-        <div class="note"><b>Pravila koja vrijede uvijek:</b> prijava QR kodom ili linkom s kodom; natjecatelj mora upisati ime i prezime; nakon klika na <i>Započni kviz</i> odbrojava se od 5 do 0; samo je jedan odgovor točan i može se odabrati samo jednom; poredak se prikazuje na kraju: više točnih odgovora je bolje, a pri jednakom broju odlučuje kraće ukupno vrijeme točnih odgovora.</div>
+        <div class="note"><b>Pravila:</b> prijava QR kodom ili linkom s kodom; jedna ponuda po pitanju; bez odgovora = 0 bodova. Poredak određuju ukupni bodovi (uz uključene odbitke); zatim broj točnih odgovora, a zatim vrijeme točnih odgovora. Bonus za prvo mjesto računa se nakon određivanja poretka.</div>
         <p class="err" id="set-err">${quizProblems(q).map(esc).join(' · ')}</p>
       </div>`;
       const title = $('#f-title'); title.oninput = () => { q.title = title.value; this.mark(); this.status(); };
       const fol = $('#f-folder'); fol.oninput = () => { q.folder = fol.value.replace(/\s+/g, ' ').trimStart(); this.mark(); };
-      ['points', 'qTime', 'revealTime', 'bonus', 'drawN'].forEach(k => { const el = $('#f-' + k); if (el) el.oninput = () => { q[k] = Math.max(0, parseFloat(String(el.value).replace(',', '.')) || 0); if (k === 'drawN') q[k] = Math.floor(q[k]); this.mark(); this.status(); }; });
-      $$('.switch', p).forEach(s => s.onclick = () => { const k = s.id.slice(2); q[k] = !q[k]; s.setAttribute('aria-checked', q[k]); const sub = $('#sub-' + k); if (sub) sub.hidden = !q[k]; this.mark(); this.status(); });
+      ['points', 'qTime', 'revealTime', 'bonus', 'negativePoints', 'drawN'].forEach(k => { const el = $('#f-' + k); if (el) el.oninput = () => { q[k] = Math.max(0, parseFloat(String(el.value).replace(',', '.')) || 0); if (k === 'drawN') q[k] = Math.floor(q[k]); this.mark(); this.status(); }; });
+      $$('[data-group-cat]', p).forEach(el => el.oninput = () => { q.drawGroups[+el.dataset.groupCat].cat = el.value.trimStart(); this.mark(); this.status(); });
+      $$('[data-group-count]', p).forEach(el => el.oninput = () => { q.drawGroups[+el.dataset.groupCount].count = Math.max(0, Math.floor(Number(el.value) || 0)); const t = $('#group-total'); if (t) t.textContent = 'Ukupno ' + q.drawGroups.reduce((n,g)=>n+g.count,0) + ' pitanja po pokretanju.'; this.mark(); this.status(); });
+      $$('[data-group-del]', p).forEach(el => el.onclick = () => { q.drawGroups.splice(+el.dataset.groupDel,1); this.mark(); this.renderPane(); });
+      const ag = $('#add-group'); if (ag) ag.onclick = () => { q.drawGroups.push({cat:'',count:1}); this.mark(); this.renderPane(); };
+      $$('.switch', p).forEach(s => s.onclick = () => { const k = s.id.slice(2); q[k] = !q[k]; s.setAttribute('aria-checked', q[k]); const sub = $('#sub-' + k); if (sub) { sub.hidden = !q[k]; if (k === 'drawByCat') sub.style.display = q[k] ? 'flex' : 'none'; } if (k === 'drawByCat') { if (q[k] && !q.drawGroups.length) q.drawGroups = [{cat:'',count:1}]; this.mark(); this.renderPane(); } else { this.mark(); this.status(); } });
     } else {
       const x = q.questions[this.qi]; const prob = qProblems(x);
       ab.innerHTML = `<button class="btn ghost" id="pv">${I.eye} Pregled</button><button class="btn primary" id="addq">${I.plus} Dodaj pitanje</button>`;
@@ -812,6 +858,7 @@ const Editor = {
         <div class="panel-body">
           <div class="two"><label class="field"><span>Tekst pitanja <i class="req">*</i></span><textarea class="input" id="q-text" maxlength="300" style="min-height:9em">${esc(x.text)}</textarea><span class="count" id="c-qt">${x.text.length}/300</span></label>
           <div class="field"><span>Slika (neobavezno)</span><div class="media" id="m-q" tabindex="0" role="button" aria-label="Odaberi sliku pitanja">${x.image ? `<span class="tag">Slika</span><img src="${x.image}" alt="Slika uz pitanje"><button class="icon-btn rm" id="rm-q" aria-label="Ukloni sliku">${I.x}</button>` : `<div class="hint">${I.img}<br>Kliknite, povucite ili zalijepite sliku (Ctrl+V)</div>`}</div><input type="file" id="fi-q" accept="image/*" hidden></div></div>
+          <label class="field"><span>Podbaza pitanja ${q.drawByCat ? '<i class="req">*</i>' : '(neobavezno)'}</span><input class="input" id="q-cat" maxlength="80" list="dl-cats" value="${esc(x.cat || '')}" placeholder="npr. Električni sklop"><datalist id="dl-cats">${[...new Set([...q.drawGroups.map(g=>g.cat), ...q.questions.map(a=>a.cat || '')].filter(Boolean))].map(v=>`<option value="${esc(v)}"></option>`).join('')}</datalist><span class="faint" style="font-size:.82rem">Naziv mora odgovarati jednoj podbazi iz postavki ako je izvlačenje po podbazama uključeno.</span></label>
           <div class="field"><span>Ponuđeni odgovori <i class="req">*</i></span><span class="faint" style="font-size:.85rem">Kliknite krug lijevo od točnog odgovora. Točan je uvijek samo jedan. Ikonom slike uz odgovor dodajete sliku; odgovor može biti tekst, slika ili oboje.</span></div>
           <div style="display:grid;gap:12px" id="ans" role="radiogroup" aria-label="Točan odgovor">${x.answers.map((a, i) => `<div class="ans"><button class="tick" role="radio" data-tick="${i}" aria-pressed="${x.correct === i}" aria-checked="${x.correct === i}" aria-label="Točan je odgovor ${LET[i]}">${I.check}</button>
             <div class="box" data-adrop="${i}"><span class="letter">${LET[i]}</span>${aImg(x, i) ? `<span class="athumb"><img src="${aImg(x, i)}" alt="Slika odgovora ${LET[i]}"><button class="icon-btn" data-arm="${i}" aria-label="Ukloni sliku odgovora ${LET[i]}" title="Ukloni sliku">${I.x}</button></span>` : ''}<input data-at="${i}" value="${esc(a)}" maxlength="160" placeholder="${aImg(x, i) ? 'Opis uz sliku (neobavezno)' : 'Odgovor ' + LET[i]}" aria-label="Tekst odgovora ${LET[i]}">
@@ -820,6 +867,7 @@ const Editor = {
           ${x.answers.length < 6 ? `<button class="btn ghost sm" id="add-a" style="justify-self:start">${I.plus} Dodaj odgovor</button>` : ''}<input type="file" id="fi-a" accept="image/*" hidden>
           <p class="err" id="q-err">${prob.map(esc).join(' · ')}</p>
         </div>`;
+      const catInput = $('#q-cat'); if (catInput) catInput.oninput = () => { x.cat = catInput.value.trimStart(); this.mark(); this.status(); };
       const t = $('#q-text');
       t.oninput = () => { x.text = t.value; $('#c-qt').textContent = t.value.length + '/300'; $('#ph-t').textContent = (this.qi + 1) + '. ' + (t.value || 'Novo pitanje'); this.mark(); this.status(); };
       $$('[data-at]', p).forEach(inp => inp.oninput = () => { x.answers[+inp.dataset.at] = inp.value; this.mark(); this.status(); });
@@ -883,6 +931,7 @@ const Editor = {
     if (!q.title.trim()) { this.setTab('set'); toast('Upišite naslov kviza.'); $('#f-title').focus(); return; }
     q.updatedAt = Date.now(); q.folder = (q.folder || '').trim();
     if (q.folder) { Host.folder = q.folder; sset(localStorage, 'pv-folder', q.folder); }
+    q.drawGroups.forEach(g => {g.cat = g.cat.trim();}); q.questions.forEach(x => {x.cat = (x.cat || '').trim();});
     try { await DB.set('quizzes/' + q.id, clone(q)); this.dirty = false; $('#dirty').hidden = true; toast('Spremljeno'); }
     catch (e) { toast('Spremanje nije uspjelo: ' + (e.message || 'provjerite vezu'), 5000); }
   }
@@ -903,9 +952,18 @@ const Live = {
       const labels = x.answers.map((t, i) => ({ok: !!(t.trim() || aImg(x, i)), l: aLabel(x, i)})).filter(a => a.ok).map(a => a.l);
       return {qid: x.id, cat: x.cat || '', text: x.text.trim(), image: x.image || null, answers: list.map(a => a.t), aimg: list.map(a => a.im), labels, correct: Math.max(0, list.findIndex(a => a.ok))};
     });
-    if (quiz.drawN > 0 && quiz.drawN < qs.length) qs = shuffle(qs).slice(0, quiz.drawN);
+    const errors = quizProblems(quiz);
+    if (errors.length || quiz.questions.some(x => qProblems(x).length)) { toast('Kviz nije spreman: ' + (errors[0] || 'dovršite pitanja'), 5000); return; }
+    if (quiz.drawByCat) {
+      const selected = [];
+      quiz.drawGroups.forEach(g => {
+        const available = qs.filter(x => (x.cat || '').trim() === g.cat);
+        selected.push(...shuffle(available).slice(0,g.count));
+      });
+      qs = shuffle(selected);
+    } else if (quiz.drawN > 0 && quiz.drawN < qs.length) qs = shuffle(qs).slice(0, quiz.drawN);
     const meta = {title: quiz.title, quizId: quiz.id, createdAt: DB.TS, host: UID, total: qs.length, shuffleA: !!quiz.shuffleA, lockJoin: !!quiz.lockJoin};
-    const settings = {points: quiz.points, qTime: quiz.qTime, revealTime: quiz.revealTime, bonusOn: !!quiz.bonusOn, bonus: quiz.bonusOn ? quiz.bonus : 0};
+    const settings = {points: quiz.points, qTime: quiz.qTime, revealTime: quiz.revealTime, bonusOn: !!quiz.bonusOn, bonus: quiz.bonusOn ? quiz.bonus : 0, negativeOn: !!quiz.negativeOn, negativePoints: quiz.negativeOn ? quiz.negativePoints : 0};
     try {
       await DB.set('games/' + code + '/secret', {questions: qs, settings});
       await DB.set('games/' + code + '/meta', meta);
@@ -1008,7 +1066,7 @@ const Live = {
       };
       this.onPlayers();
     } else if (s.phase === 'countdown') {
-      m.innerHTML = `<div class="center" style="flex:1"><p class="label">Kviz počinje za</p><div class="big-count mono" id="cd">${s.dur}</div><h2>${esc(this.meta.title)}</h2><p class="muted">${this.secret.questions.length} pitanja · ${this.S.qTime} s za odgovor · ${fmtP(this.S.points)} b za točan odgovor</p></div>`;
+      m.innerHTML = `<div class="center" style="flex:1"><p class="label">Kviz počinje za</p><div class="big-count mono" id="cd">${s.dur}</div><h2>${esc(this.meta.title)}</h2><p class="muted">${this.secret.questions.length} pitanja · ${this.S.qTime} s za odgovor · +${fmtP(this.S.points)} b za točan odgovor${this.S.negativeOn ? ` · −${fmtP(this.S.negativePoints)} b za netočan` : ''}</p></div>`;
     } else if (s.phase === 'question') {
       const q = this.secret.questions[s.qi];
       m.innerHTML = `<div class="qbody"><div style="display:grid;gap:18px;min-width:0">${q.cat ? `<p class="label">${esc(q.cat)}</p>` : ''}<p class="qtext">${esc(q.text)}</p>
@@ -1109,12 +1167,12 @@ const Live = {
   async finish() {
     const S = this.S; const ids = new Set([...Object.keys(this.players), ...Object.keys(this.scores)]);
     const list = [...ids].map(u => Object.assign({u}, this.scores[u] || {correct: 0, time: 0, perQ: {}}));
-    list.sort(rankCmp);
+    list.sort((a,b) => rankCmp(a,b,S));
     const upd = {};
     list.forEach((r, i) => {
-      const base = (r.correct || 0) * S.points;
-      const bonus = i === 0 && S.bonusOn && r.correct > 0 ? S.bonus : 0;
-      upd[r.u] = Object.assign({}, this.scores[r.u] || {correct: 0, time: 0, perQ: {}}, {rank: i + 1, of: list.length, points: base, bonus, total: Math.round((base + bonus) * 100) / 100});
+      const scored = scoreFor(r, S);
+      const bonus = i === 0 && S.bonusOn && scored.correct > 0 ? S.bonus : 0;
+      upd[r.u] = Object.assign({}, this.scores[r.u] || {correct: 0, time: 0, perQ: {}}, {rank: i + 1, of: list.length, wrong: scored.wrong, points: scored.points, penalty: scored.penalty, bonus, total: roundScore(scored.net + bonus)});
     });
     await DB.set(`games/${this.code}/scores`, upd); this.scores = upd;
     await DB.set(`games/${this.code}/board`, list.slice(0, 10).map(r => ({n: this.pname(this.players[r.u]), p: upd[r.u].total, k: r.correct || 0, t: r.time || 0})));
@@ -1127,8 +1185,8 @@ const Live = {
     const ids = new Set([...Object.keys(this.players), ...Object.keys(this.scores)]);
     const rows = [...ids].map(u => { const p = this.players[u] || {}; const s = this.scores[u] || {}; const perQ = s.perQ || {};
       const per = []; for (let i = 0; i < nq; i++) per.push(perQ[i] || {c: null, ok: false, ms: null});
-      return {ime: p.ime || '', prezime: p.prezime || '', per, correct: s.correct || 0, time: s.time || 0, points: s.points || 0, bonus: s.bonus || 0, total: s.total || 0, rank: s.rank || 0}; });
-    rows.sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9) || rankCmp(a, b));
+      return {ime: p.ime || '', prezime: p.prezime || '', per, correct: s.correct || 0, wrong: s.wrong || 0, time: s.time || 0, points: s.points || 0, penalty: s.penalty || 0, bonus: s.bonus || 0, total: s.total || 0, rank: s.rank || 0}; });
+    rows.sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9) || rankCmp(a, b, this.S));
     return rows;
   },
   showReport(m) {
@@ -1137,13 +1195,13 @@ const Live = {
     const pod = rows.slice(0, 3);
     m.innerHTML = `
       <div class="home-head" style="margin:0"><div><p class="label">Konačni poredak</p><h1>${esc(this.meta.title)}</h1>
-        <p class="muted">${rows.length} natjecatelja · ${played} od ${nq} pitanja · ${fmtP(this.S.points)} b za točan odgovor${this.S.bonusOn ? ` · bonus za 1. mjesto ${fmtP(this.S.bonus)} b` : ''}</p></div>
+        <p class="muted">${rows.length} natjecatelja · ${played} od ${nq} pitanja · +${fmtP(this.S.points)} b/točan${this.S.negativeOn ? ` · −${fmtP(this.S.negativePoints)} b/netočan` : ''}${this.S.bonusOn ? ` · bonus za 1. mjesto ${fmtP(this.S.bonus)} b` : ''}</p></div>
         <div class="row no-print"><button class="btn primary" id="xlsx">${I.dl} Preuzmi Excel izvještaj</button></div></div>
       ${pod.length ? `<div class="podium">${pod.map((r, i) => `<div class="pod p${i + 1}"><span class="place">${i + 1}.</span><b>${esc((r.ime + ' ' + r.prezime).trim())}</b><span class="mono">${fmtP(r.total)} b${r.bonus ? ` <small>(+${fmtP(r.bonus)} bonus)</small>` : ''}</span><small class="mono">${r.correct}/${nq} točnih · ${fmtS(r.time)} s</small></div>`).join('')}</div>` : ''}
-      <div class="table-wrap"><table class="t"><thead><tr><th class="num">Mjesto</th><th>Prezime</th><th>Ime</th>${this.secret.questions.map((q, i) => `<th class="num" title="${esc(q.text)}">P${i + 1}</th>`).join('')}<th class="num">Točnih</th><th class="num">Vrijeme, s</th><th class="num">Bonus</th><th class="num">Bodovi</th></tr></thead>
-        <tbody>${rows.map(r => `<tr><td class="num">${r.rank}.</td><td><b>${esc(r.prezime)}</b></td><td>${esc(r.ime)}</td>${r.per.map(p => `<td class="num" style="color:${p.ok ? 'var(--ok)' : (p.c === null ? 'var(--ink-3)' : 'var(--bad)')}" title="${p.c === null ? 'bez odgovora' : (p.ok ? 'točno' : 'netočno') + ', ' + fmtS(p.ms) + ' s'}">${p.ok ? '✓' : (p.c === null ? '–' : '✗')}</td>`).join('')}<td class="num">${r.correct}/${nq}</td><td class="num">${fmtS(r.time)}</td><td class="num">${r.bonus ? fmtP(r.bonus) : ''}</td><td class="num"><b>${fmtP(r.total)}</b></td></tr>`).join('') || `<tr><td colspan="${nq + 7}">Nema natjecatelja.</td></tr>`}</tbody>
-        <tfoot><tr><td></td><td colspan="2" class="faint">Točno odgovorilo</td>${qStats.map(p => `<td class="num faint">${p}%</td>`).join('')}<td colspan="4"></td></tr></tfoot></table></div>
-      <p class="faint" style="font-size:.88rem">Vrijeme je zbroj vremena odgovaranja na točno odgovorena pitanja; pri jednakom broju točnih odgovora bolje mjesto ima kraće vrijeme.</p>`;
+      <div class="table-wrap"><table class="t"><thead><tr><th class="num">Mjesto</th><th>Prezime</th><th>Ime</th>${this.secret.questions.map((q, i) => `<th class="num" title="${esc(q.text)}">P${i + 1}</th>`).join('')}<th class="num">Točnih</th><th class="num">Netočnih</th><th class="num">Odbitak</th><th class="num">Vrijeme, s</th><th class="num">Bonus</th><th class="num">Bodovi</th></tr></thead>
+        <tbody>${rows.map(r => `<tr><td class="num">${r.rank}.</td><td><b>${esc(r.prezime)}</b></td><td>${esc(r.ime)}</td>${r.per.map(p => `<td class="num" style="color:${p.ok ? 'var(--ok)' : (p.c === null ? 'var(--ink-3)' : 'var(--bad)')}" title="${p.c === null ? 'bez odgovora' : (p.ok ? 'točno' : 'netočno') + ', ' + fmtS(p.ms) + ' s'}">${p.ok ? '✓' : (p.c === null ? '–' : '✗')}</td>`).join('')}<td class="num">${r.correct}/${nq}</td><td class="num">${r.wrong}</td><td class="num">${r.penalty ? '−' + fmtP(r.penalty) : '0'}</td><td class="num">${fmtS(r.time)}</td><td class="num">${r.bonus ? fmtP(r.bonus) : ''}</td><td class="num"><b>${fmtP(r.total)}</b></td></tr>`).join('') || `<tr><td colspan="${nq + 9}">Nema natjecatelja.</td></tr>`}</tbody>
+        <tfoot><tr><td></td><td colspan="2" class="faint">Točno odgovorilo</td>${qStats.map(p => `<td class="num faint">${p}%</td>`).join('')}<td colspan="6"></td></tr></tfoot></table></div>
+      <p class="faint" style="font-size:.88rem">Poredak: više ukupnih bodova, zatim više točnih odgovora, a zatim kraće vrijeme točnih odgovora. Neodgovorena pitanja nose 0 bodova.</p>`;
     if (pod.length) confetti();
     $('#xlsx').onclick = () => this.excel(rows);
   },
@@ -1151,18 +1209,18 @@ const Live = {
     const qs = this.secret.questions; const nq = qs.length;
     if (!window.XLSX) { try { await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'); } catch (e) {} }
     const date = new Date(); const d = date.toLocaleDateString('hr-HR');
-    const res = [['Mjesto', 'Prezime', 'Ime', 'Točnih odgovora', 'Od pitanja', 'Vrijeme točnih odgovora (s)', 'Bodovi za točne', 'Bonus', 'Ukupno bodova'],
-      ...rows.map(r => [r.rank, r.prezime, r.ime, r.correct, nq, Math.round(r.time / 100) / 10, r.points, r.bonus, r.total])];
+    const res = [['Mjesto', 'Prezime', 'Ime', 'Točnih odgovora', 'Netočnih odgovora', 'Od pitanja', 'Vrijeme točnih odgovora (s)', 'Bodovi za točne', 'Oduzeti bodovi', 'Bonus', 'Ukupno bodova'],
+      ...rows.map(r => [r.rank, r.prezime, r.ime, r.correct, r.wrong, nq, Math.round(r.time / 100) / 10, r.points, r.penalty, r.bonus, r.total])];
     const det = [['Mjesto', 'Prezime', 'Ime', ...qs.flatMap((q, i) => [`P${i + 1} odgovor`, `P${i + 1} točno`, `P${i + 1} vrijeme (s)`])],
       ...rows.map(r => [r.rank, r.prezime, r.ime, ...r.per.flatMap((p, i) => [p.c === null ? '' : aLabel(qs[i], p.c), p.c === null ? '' : (p.ok ? 1 : 0), p.ms === null ? '' : Math.round(p.ms / 100) / 10])])];
     const qsh = [['Pitanje', 'Tekst', 'Točan odgovor', 'Točno odgovorilo', 'Udio točnih (%)'],
       ...qs.map((q, i) => { const k = rows.filter(r => r.per[i].ok).length; return [i + 1, q.text, aLabel(q, q.correct), k, rows.length ? Math.round(100 * k / rows.length) : 0]; })];
-    const info = [['Kviz', this.meta.title], ['Kod', this.code], ['Datum izvještaja', d], ['Bodova za točan odgovor', this.S.points], ['Vrijeme za odgovor (s)', this.S.qTime], ['Bonus za 1. mjesto', this.S.bonusOn ? this.S.bonus : 0], ['Pravilo poretka', 'Više točnih odgovora; pri jednakom broju kraće ukupno vrijeme točnih odgovora.']];
+    const info = [['Kviz', this.meta.title], ['Kod', this.code], ['Datum izvještaja', d], ['Bodova za točan odgovor', this.S.points], ['Negativno bodovanje uključeno', this.S.negativeOn ? 'Da' : 'Ne'], ['Odbitak za netočan odgovor', this.S.negativeOn ? this.S.negativePoints : 0], ['Neodgovoreno pitanje', 0], ['Vrijeme za odgovor (s)', this.S.qTime], ['Bonus za 1. mjesto', this.S.bonusOn ? this.S.bonus : 0], ['Pravilo poretka', 'Više ukupnih bodova; zatim više točnih odgovora; zatim kraće vrijeme točnih odgovora.']];
     const fname = `Rezultati_${(this.meta.title || 'kviz').replace(/[^\wčćžšđČĆŽŠĐ\-]+/g, '_').slice(0, 60)}_${this.code}`;
     if (window.XLSX) {
       const X = window.XLSX; const wb = X.utils.book_new();
       const add = (aoa, name, widths) => { const ws = X.utils.aoa_to_sheet(aoa); ws['!cols'] = widths.map(w => ({wch: w})); X.utils.book_append_sheet(wb, ws, name); };
-      add(res, 'Rezultati', [8, 18, 14, 15, 10, 24, 15, 8, 14]);
+      add(res, 'Rezultati', [8, 18, 14, 15, 16, 10, 24, 15, 15, 8, 14]);
       add(det, 'Odgovori po pitanjima', [8, 18, 14, ...qs.flatMap(() => [30, 10, 14])]);
       add(qsh, 'Pitanja', [9, 60, 40, 16, 15]);
       add(info, 'Podaci o kvizu', [26, 70]);
