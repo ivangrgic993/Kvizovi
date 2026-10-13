@@ -284,6 +284,25 @@ img{max-width:100%;height:auto}
   .modal .answers{grid-template-columns:1fr;}
 }
 
+/* Navigacija kroz nastavnicki pregled pitanja; ostaje unutar modalnog prozora. */
+.modal.preview-modal{display:block}
+.preview-toolbar{
+  position:sticky;top:-24px;z-index:2;
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;
+  gap:10px;padding:8px 0 14px;margin-bottom:16px;
+  background:var(--bg);border-bottom:1px solid var(--line);
+}
+.preview-controls{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}
+.preview-count{white-space:nowrap;font-size:.86rem;font-weight:700;color:var(--ink-2);min-width:92px;text-align:center}
+.preview-shortcuts{margin:16px 0 0;font-size:.78rem;color:var(--ink-3);text-align:center}
+.preview-modal .qbody{margin-top:8px}
+.preview-modal .answers{margin-top:18px}
+@media(max-width:650px){
+  .preview-toolbar{top:-16px}
+  .preview-controls{justify-content:flex-start;width:100%}
+  .preview-count{min-width:0}
+}
+
 /* uklanjanje iz predvorja */
 .chip{display:inline-flex;align-items:center;gap:.35em}
 .chip-x{border:0;background:transparent;color:var(--ink-3);cursor:pointer;padding:0 .1em;display:inline-grid;place-items:center;font:inherit;font-size:.8rem;font-weight:700}
@@ -945,12 +964,61 @@ const Editor = {
     });
   },
   preview(x) {
+    // Pregled prolazi cijelom bazom pitanja, bez promjene odabira u uredjivacu.
+    const questions = this.q.questions;
+    if (!questions.length) return;
+    let index = questions.findIndex(item => item === x || (x.id && item.id === x.id));
+    if (index < 0) index = Math.max(0, Math.min(this.qi, questions.length - 1));
+    const opener = document.activeElement;
     const bg = document.createElement('div'); bg.className = 'modal-bg';
-    bg.innerHTML = `<div class="modal" role="dialog" aria-label="Pregled pitanja"><div class="qhead"><span class="label" style="flex:1">Pregled · točan odgovor je istaknut</span><button class="icon-btn" aria-label="Zatvori">${I.x}</button></div>
-      <div class="qbody"><p class="qtext">${esc(x.text || 'Novo pitanje')}</p>${x.image ? `<div class="qimg"><img src="${x.image}" alt=""></div>` : ''}</div>
-      <div class="answers">${x.answers.map((a, i) => aFilled(x, i) ? `<div class="abtn c${i} ${x.correct === i ? 'right' : ''}"><span class="L">${LET[i]}</span><span class="abody">${aContent(x, i)}</span>${x.correct === i ? `<span class="mark">${I.check}</span>` : ''}</div>` : '').join('')}</div></div>`;
-    bg.onclick = e => { if (e.target === bg || e.target.closest('.icon-btn')) bg.remove(); };
+    const close = () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      bg.remove();
+      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({preventScroll:true});
+    };
+    const render = () => {
+      const q = questions[index];
+      bg.innerHTML = `<div class="modal preview-modal" role="dialog" aria-modal="true" aria-label="Pregled pitanja" tabindex="-1">
+        <div class="preview-toolbar">
+          <span class="label">Pregled · točan odgovor je istaknut</span>
+          <div class="preview-controls">
+            <button type="button" class="btn ghost sm" data-preview="prev" ${index === 0 ? 'disabled' : ''} aria-label="Prethodno pitanje">← Prethodno</button>
+            <span class="preview-count mono" aria-live="polite">${index + 1} / ${questions.length}</span>
+            <button type="button" class="btn ghost sm" data-preview="next" ${index === questions.length - 1 ? 'disabled' : ''} aria-label="Sljedeće pitanje">Sljedeće →</button>
+            <button type="button" class="icon-btn" data-preview="close" title="Zatvori pregled (Esc)" aria-label="Zatvori pregled">${I.x}</button>
+          </div>
+        </div>
+        <div class="qbody"><p class="qtext">${esc(q.text || 'Novo pitanje')}</p>${q.image ? `<div class="qimg"><img src="${q.image}" alt="Slika uz pitanje"></div>` : ''}</div>
+        <div class="answers">${q.answers.map((a, i) => aFilled(q, i) ? `<div class="abtn c${i} ${q.correct === i ? 'right' : ''}"><span class="L">${LET[i]}</span><span class="abody">${aContent(q, i)}</span>${q.correct === i ? `<span class="mark">${I.check}</span>` : ''}</div>` : '').join('')}</div>
+        <p class="preview-shortcuts">Tipke ← i → za listanje · Esc ili × za zatvaranje</p>
+      </div>`;
+      const dialog = bg.querySelector('.preview-modal');
+      dialog.scrollTop = 0;
+      dialog.focus({preventScroll:true});
+    };
+    const move = delta => {
+      const next = index + delta;
+      if (next >= 0 && next < questions.length) { index = next; render(); }
+    };
+    const onKeyDown = e => {
+      if (!bg.isConnected) { document.removeEventListener('keydown', onKeyDown, true); return; }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault(); e.stopPropagation();
+        move(e.key === 'ArrowLeft' ? -1 : 1);
+      }
+    };
+    bg.onclick = e => {
+      if (e.target === bg) { close(); return; }
+      const btn = e.target.closest('[data-preview]');
+      if (!btn || btn.disabled) return;
+      if (btn.dataset.preview === 'close') close();
+      else move(btn.dataset.preview === 'prev' ? -1 : 1);
+    };
     document.body.appendChild(bg);
+    document.addEventListener('keydown', onKeyDown, true);
+    render();
   },
   async save() {
     const q = this.q;
