@@ -258,6 +258,32 @@ img{max-width:100%;height:auto}
 .stage-main.compact{gap:16px;padding-block:18px}
 .stage-main.compact .qimg img{max-height:28vh}
 .stage-main.compact .qtext{font-size:clamp(1.4rem,2.6vw,2.2rem)}
+/* Pregled pitanja u nastavničkoj konzoli: slika ide ispod punog teksta,
+   tako da dugo pitanje ne ostane u uskom stupcu. */
+.modal .qbody{
+  grid-template-columns:minmax(0, 1fr);
+  gap:14px;
+}
+.modal .qtext{
+  font-size:clamp(1.35rem, 2.4vw, 1.95rem);
+  line-height:1.25;
+  overflow-wrap:break-word;
+}
+.modal .qimg{
+  width:min(100%, 700px);
+  max-width:100%;
+  justify-self:center;
+}
+.modal .qimg img{
+  max-height:43vh;
+  width:auto;
+  max-width:100%;
+}
+@media (max-width:650px){
+  .modal{padding:16px;}
+  .modal .answers{grid-template-columns:1fr;}
+}
+
 /* uklanjanje iz predvorja */
 .chip{display:inline-flex;align-items:center;gap:.35em}
 .chip-x{border:0;background:transparent;color:var(--ink-3);cursor:pointer;padding:0 .1em;display:inline-grid;place-items:center;font:inherit;font-size:.8rem;font-weight:700}
