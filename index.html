@@ -357,6 +357,17 @@ img{max-width:100%;height:auto}
 .ftab .mono{font-size:.8rem;color:var(--ink-3)}
 .ftab[aria-current="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .ftab[aria-current="true"] .mono{color:inherit;opacity:.8}
+/* Diskretna ručkica za promjenu redoslijeda predmeta. */
+.ftab{align-items:center;gap:.3em}
+.ftab-label{pointer-events:none}
+.ftab .fdrag{display:inline-grid;place-items:center;width:18px;height:23px;margin-left:2px;border-radius:5px;color:var(--ink-3);opacity:.52;cursor:grab;touch-action:none;flex:0 0 auto}
+.ftab:hover .fdrag,.ftab .fdrag:hover{opacity:1}
+.ftab .fdrag:hover{background:var(--sunk);color:var(--ink)}
+.ftab[aria-current="true"] .fdrag{color:inherit;opacity:.75}
+.ftab .fdrag:active{cursor:grabbing}
+.ftab .fdrag svg{width:14px;height:14px;pointer-events:none}
+.ftab.fsort-dragging{opacity:.5;border-style:dashed}
+.ftab.fsort-target{box-shadow:0 0 0 2px var(--accent)}
 .ftab-sp{flex:1}
 .f-form{display:flex;gap:8px;flex-wrap:wrap;flex-basis:100%;justify-content:flex-end}
 .f-form .input{max-width:320px}
@@ -679,7 +690,7 @@ const Host = {
         ${SAMPLE ? `<button class="btn ghost" id="add-sample">Dodaj primjer kviza</button>` : ''}
         <button class="btn primary" id="new-q">${I.plus} Novi kviz</button></div></div>
       <nav class="ftabs" id="ftabs" aria-label="Predmeti"></nav>
-      <p class="qsort-hint" id="qsort-hint" hidden>Za promjenu redoslijeda povucite ikonicu u gornjem kutu kartice. Raspored se automatski sprema.</p>
+      <p class="qsort-hint" id="fsort-hint">Za promjenu redoslijeda povucite točkice uz naziv predmeta ili na kartici kviza. Raspored se automatski sprema.</p>
        <div id="qgrid" class="grid-q"><div class="empty">Učitavam…</div></div>
       <div class="section-gap home-head"><div><p class="label">Izvještaji</p><h2>Održani kvizovi</h2></div></div>
       <div id="hist"><div class="empty">Učitavam…</div></div>
@@ -691,9 +702,10 @@ const Host = {
     $('#imp').onchange = e => {
       const f = e.target.files[0]; if (!f) return;
       const rd = new FileReader();
-      rd.onload = async () => { try { const q = normQuiz(JSON.parse(rd.result)); q.id = rid(10); q.updatedAt = Date.now(); if (this.curFolder()) q.folder = this.curFolder(); await DB.set('quizzes/' + q.id, q); toast('Kviz uvezen'); } catch (err) { toast('Datoteka nije ispravan kviz (JSON).'); } };
+      rd.onload = async () => { try { const q = normQuiz(JSON.parse(rd.result)); q.id = rid(10); q.updatedAt = Date.now(); if (this.curFolder()) q.folder = this.curFolder(); delete q.folderDisplayOrder; await DB.set('quizzes/' + q.id, q); toast('Kviz uvezen'); } catch (err) { toast('Datoteka nije ispravan kviz (JSON).'); } };
       rd.readAsText(f);
     };
+    this.setupFolderDrag();
     this.setupQuizDrag();
      this.unsubs.push(DB.on('quizzes', v => { this.quizzes = v || {}; this.renderTabs(); this.renderGrid(); this.renderHist(); }));
     this.unsubs.push(DB.on('history', v => { this.history = v || {}; this.renderHist(); }));
@@ -704,7 +716,23 @@ const Host = {
     if (!this.extraFolders) { try { this.extraFolders = JSON.parse(sget(localStorage, 'pv-folders') || '[]'); } catch (e) { this.extraFolders = []; } }
     const set = new Set(Object.values(this.quizzes).map(q => ((q && q.folder) || '').trim()).filter(Boolean));
     this.extraFolders.forEach(f => set.add(f));
-    return [...set].sort((a, b) => a.localeCompare(b, 'hr'));
+    // Početni raspored je abecedni. Nakon povlačenja prednost imaju
+    // redni brojevi spremljeni na kvizovima (Firebase), bez novih DB pravila.
+    let fallback = [];
+    try { fallback = JSON.parse(sget(localStorage, 'pv-folder-order') || '[]'); } catch (_) {}
+    if (!Array.isArray(fallback)) fallback = [];
+    const saved = new Map(fallback.map((name, i) => [name, i]));
+    const remote = new Map();
+    Object.values(this.quizzes).forEach(q => {
+      if (!q) return;
+      const f = (q.folder || '').trim();
+      const n = Number(q.folderDisplayOrder);
+      if (f && q.folderDisplayOrder !== undefined && q.folderDisplayOrder !== null && Number.isFinite(n)) {
+        remote.set(f, Math.min(remote.has(f) ? remote.get(f) : Infinity, n));
+      }
+    });
+    const pos = f => remote.has(f) ? remote.get(f) : (saved.has(f) ? saved.get(f) : Infinity);
+    return [...set].sort((a, b) => pos(a) - pos(b) || a.localeCompare(b, 'hr'));
   },
   hasUnfiled() { return Object.values(this.quizzes).some(q => !((q && q.folder) || '').trim()); },
   curFolder() { const f = this.folder; return f && f !== '*' && f !== '-' ? f : ''; },
@@ -717,13 +745,13 @@ const Host = {
     if (this.folder !== '*' && this.folder !== '-' && !fs.includes(this.folder)) this.folder = fs[0] || '*';
     if (this.folder === '-' && !this.hasUnfiled()) this.folder = '*';
     const cnt = f => Object.values(this.quizzes).filter(q => { const x = ((q && q.folder) || '').trim(); return f === '*' ? true : f === '-' ? !x : x === f; }).length;
-    const tab = (k, label) => `<button class="ftab" data-f="${esc(k)}" aria-current="${this.folder === k}">${esc(label)} <span class="mono">${cnt(k)}</span></button>`;
+    const tab = (k, label) => `<button class="ftab" data-f="${esc(k)}" ${k !== '*' && k !== '-' ? 'data-sort-folder="1"' : ''} aria-current="${this.folder === k}"><span class="ftab-label">${esc(label)}</span> <span class="mono">${cnt(k)}</span>${k !== '*' && k !== '-' ? `<span class="fdrag" data-fdrag="${esc(k)}" draggable="true" title="Povuci za promjenu redoslijeda predmeta" aria-label="Povuci predmet ${esc(k)}">${I.grip}</span>` : ''}</button>`;
     t.innerHTML = fs.map(f => tab(f, f)).join('') + (this.hasUnfiled() ? tab('-', 'Bez predmeta') : '') + tab('*', 'Svi')
       + `<span class="ftab-sp"></span>`
       + (this.curFolder() ? `<button class="btn ghost sm" id="f-ren">${I.pen} Preimenuj predmet</button>` : '')
       + `<button class="btn ghost sm" id="f-new">${I.plus} Novi predmet</button>`
       + `<form id="f-form" class="f-form" hidden><input class="input" id="f-name" maxlength="60" placeholder="npr. Regulacijska tehnika (511)" aria-label="Naziv predmeta"><button class="btn primary sm" type="submit" id="f-ok">Dodaj</button><button class="btn ghost sm" type="button" id="f-cancel">Odustani</button></form>`;
-    t.onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; this.folder = b.dataset.f; sset(localStorage, 'pv-folder', this.folder); this.renderTabs(); this.renderGrid(); this.renderHist(); };
+    t.onclick = e => { if (Date.now() < (this.suppressFolderClickUntil || 0)) return; const b = e.target.closest('[data-f]'); if (!b) return; this.folder = b.dataset.f; sset(localStorage, 'pv-folder', this.folder); this.renderTabs(); this.renderGrid(); this.renderHist(); };
     const form = $('#f-form'), name = $('#f-name'); let mode = 'new';
     const openForm = (m, val) => { mode = m; form.hidden = false; name.value = val || ''; $('#f-ok').textContent = m === 'new' ? 'Dodaj' : 'Spremi'; name.focus(); };
     $('#f-new').onclick = () => openForm('new');
@@ -744,6 +772,78 @@ const Host = {
         this.folder = v; sset(localStorage, 'pv-folder', v); this.renderTabs(); this.renderGrid(); this.renderHist(); toast('Predmet preimenovan');
       } catch (err) { toast('Preimenovanje nije uspjelo: ' + (err.message || ''), 5000); }
     };
+  },
+  setupFolderDrag() {
+    const tabs = $('#ftabs'); if (!tabs) return;
+    this.draggingFolder = null;
+    this.folderDropSaving = false;
+    const clear = () => {
+      tabs.querySelectorAll('.ftab').forEach(el => el.classList.remove('fsort-dragging', 'fsort-target'));
+      this.draggingFolder = null;
+    };
+    tabs.addEventListener('dragstart', e => {
+      const handle = e.target.closest('[data-fdrag]');
+      if (!handle) { e.preventDefault(); return; }
+      const item = handle.closest('[data-sort-folder]');
+      if (!item) { e.preventDefault(); return; }
+      this.draggingFolder = handle.dataset.fdrag;
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', this.draggingFolder);
+        try { e.dataTransfer.setDragImage(item, 24, 12); } catch (_) {}
+      }
+      requestAnimationFrame(() => { if (item.isConnected) item.classList.add('fsort-dragging'); });
+    });
+    tabs.addEventListener('dragover', e => {
+      if (!this.draggingFolder) return;
+      const target = e.target.closest('[data-sort-folder]');
+      const dragged = [...tabs.querySelectorAll('[data-sort-folder]')].find(el => el.dataset.f === this.draggingFolder);
+      if (!target || !dragged) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      tabs.querySelectorAll('.ftab').forEach(el => el.classList.remove('fsort-target'));
+      if (target === dragged) return;
+      target.classList.add('fsort-target');
+      const rect = target.getBoundingClientRect();
+      const after = e.clientY > rect.bottom || (e.clientY >= rect.top && e.clientY <= rect.bottom && e.clientX >= rect.left + rect.width / 2);
+      // Kartice 'Bez predmeta' i 'Svi' ostaju zadnje i ne mogu se premještati.
+      tabs.insertBefore(dragged, after ? target.nextSibling : target);
+    });
+    tabs.addEventListener('drop', async e => {
+      if (!this.draggingFolder) return;
+      e.preventDefault();
+      const folders = [...tabs.querySelectorAll('[data-sort-folder]')].map(el => el.dataset.f);
+      this.folderDropSaving = true;
+      this.suppressFolderClickUntil = Date.now() + 500;
+      clear();
+      if (folders.length < 2) { this.folderDropSaving = false; return; }
+      // Prazni predmeti postoje samo u ovom pregledniku; za njih spremamo lokalno.
+      const old = sget(localStorage, 'pv-folder-order');
+      sset(localStorage, 'pv-folder-order', JSON.stringify(folders));
+      const rank = new Map(folders.map((f, i) => [f, i]));
+      const updates = {};
+      for (const [id, q] of Object.entries(this.quizzes)) {
+        const f = ((q && q.folder) || '').trim();
+        if (rank.has(f)) updates[id + '/folderDisplayOrder'] = rank.get(f);
+      }
+      try {
+        // Multi-path zapis samo rednih brojeva: bez prepisivanja slika, pitanja i rezultata.
+        if (Object.keys(updates).length) await DB.update('quizzes', updates);
+        toast('Redoslijed predmeta spremljen');
+        this.renderTabs();
+      } catch (err) {
+        if (old == null) { try { localStorage.removeItem('pv-folder-order'); } catch (_) {} }
+        else sset(localStorage, 'pv-folder-order', old);
+        toast('Spremanje redoslijeda nije uspjelo: ' + (err.message || ''), 5000);
+        this.renderTabs();
+      } finally { this.folderDropSaving = false; }
+    });
+    tabs.addEventListener('dragend', () => {
+      const wasDragging = !!this.draggingFolder;
+      if (wasDragging) this.suppressFolderClickUntil = Date.now() + 500;
+      clear();
+      if (!this.folderDropSaving && wasDragging) this.renderTabs();
+    });
   },
   renderGrid() {
     const g = $('#qgrid'); if (!g) return;
@@ -866,7 +966,7 @@ const Host = {
       const title = bg.querySelector('#copy-title').value.trim();
       if (!folder || !title) { toast('Odaberite predmet i upišite naslov kopije'); return; }
       const button = bg.querySelector('#copy-confirm'); button.disabled = true;
-      const c = clone(q); c.id = rid(10); c.title = title; c.folder = folder; c.updatedAt = Date.now(); delete c.displayOrder;
+      const c = clone(q); c.id = rid(10); c.title = title; c.folder = folder; c.updatedAt = Date.now(); delete c.displayOrder; delete c.folderDisplayOrder;
       try {
         await DB.set('quizzes/' + c.id, c);
         close();
@@ -910,8 +1010,8 @@ const Host = {
    UREĐIVAČ KVIZA
    ============================================================ */
 const Editor = {
-  q: null, tab: 'set', qi: 0, dirty: false,
-  open(q, isNew) { Host.cleanup(); this.filter = ''; this.q = normQuiz(clone(q)); this.tab = 'set'; this.qi = 0; this.dirty = !!isNew; this.render(); },
+  q: null, tab: 'set', qi: 0, dirty: false, originalFolder: null,
+  open(q, isNew) { Host.cleanup(); this.filter = ''; this.originalFolder = ((q && q.folder) || '').trim(); this.q = normQuiz(clone(q)); this.tab = 'set'; this.qi = 0; this.dirty = !!isNew; this.render(); },
   mark() { this.dirty = true; const d = $('#dirty'); if (d) d.hidden = false; },
   setTab(t) { this.tab = t; $$('.tab').forEach(x => x.setAttribute('aria-selected', x.dataset.tab === t)); this.refreshRail(); this.renderPane(); },
   render() {
@@ -1142,9 +1242,10 @@ const Editor = {
     const q = this.q;
     if (!q.title.trim()) { this.setTab('set'); toast('Upišite naslov kviza.'); $('#f-title').focus(); return; }
     q.updatedAt = Date.now(); q.folder = (q.folder || '').trim();
+    if (q.folder !== this.originalFolder) delete q.folderDisplayOrder;
     if (q.folder) { Host.folder = q.folder; sset(localStorage, 'pv-folder', q.folder); }
     q.drawGroups.forEach(g => {g.cat = g.cat.trim();}); q.questions.forEach(x => {x.cat = (x.cat || '').trim();});
-    try { await DB.set('quizzes/' + q.id, clone(q)); this.dirty = false; $('#dirty').hidden = true; toast('Spremljeno'); }
+    try { await DB.set('quizzes/' + q.id, clone(q)); this.originalFolder = q.folder; this.dirty = false; $('#dirty').hidden = true; toast('Spremljeno'); }
     catch (e) { toast('Spremanje nije uspjelo: ' + (e.message || 'provjerite vezu'), 5000); }
   }
 };
